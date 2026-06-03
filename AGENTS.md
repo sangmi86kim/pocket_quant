@@ -169,16 +169,16 @@ DD-RSI-MA몬
 
 ### 기본 체육관 (4개) — 실제 시장 국면 기간
 
-각 체육관은 SPY 가격으로 그 기간을 백테스트한다. difficulty/volatility는 연출용 메타데이터.
+각 체육관은 SPY 가격으로 그 기간을 백테스트한다. difficulty/volatility는 연출용 메타데이터(1~10).
 
 ```text
-FINANCIAL_CRISIS   2007-10-01 ~ 2009-06-30   # S&P -57%, 시스템 붕괴 → 최대 낙폭
-DOTCOM             2000-01-01 ~ 2002-12-31   # -49%(나스닥-78%), 2.5년 느린 약세장
-RATE_SHOCK         2022-01-01 ~ 2022-12-31   # -25%, 채권 동반하락이나 질서있음
-COVID              2020-01-01 ~ 2020-08-31   # -34%지만 V자 즉시회복(버티면 생존)
+2008 금융위기 체육관     2008-01-01 ~ 2009-06-30   # 시스템 붕괴 대폭락 → 방어형 천국
+2020 코로나 급락 체육관   2020-02-01 ~ 2020-06-30   # V자 급락→즉시회복 (버티면 생존)
+2017 불타입 상승장 체육관 2017-01-01 ~ 2017-12-31   # 저변동성 우상향 (추세/모멘텀 강세)
+2015-2016 횡보장 체육관   2015-01-01 ~ 2016-12-31   # 방향 없는 출렁임 (추세형 헛신호)
 ```
 
-> SPY(1993~ 상장)가 4개 국면을 모두 커버. boss / TRUMP 체육관은 향후 확장 시 고려.
+> 폭락·급락·상승·횡보 4국면을 일부러 섞음(국면 다양성=과적합 방지). SPY(1993~)가 전부 커버.
 
 ### 함수
 
@@ -314,10 +314,13 @@ CLI 입력만 받는다. argparse로 인자를 파싱해 `app/service.py`의 함
 계산도 흐름 조립도 출력도 하지 않는다 (전부 service/backend 담당).
 
 ```python
-run_single(gene_count, seed)        # service.py — 단판 흐름
-run_evolve(pop, generations, seed)  # service.py — 진화 흐름
-run_pokedex()                       # service.py — 도감(--dex)
+run_single(gene_count, seed, md_path)        # service.py — 단판 흐름
+run_evolve(pop, generations, seed, md_path)  # service.py — 진화 흐름
+run_pokedex()                                # service.py — 도감(--dex)
 ```
+
+> `--md`: Markdown 리포트 저장. 값 생략 시 `reports/pocketquant_{single|evolve}_report.md`,
+> 경로 지정 시 그 경로. service의 `_markdown_report`가 Report를 표로 렌더(진화는 챔피언 기준).
 
 ### 파이프라인 순서 (service.py가 조립)
 
@@ -348,6 +351,7 @@ run_pokedex()                       # service.py — 도감(--dex)
 
 # [공통]
 --seed             # 랜덤 시드 고정 (재현 가능 → GA 검증용)
+--md [경로]        # Markdown 리포트 저장 (경로 생략 시 reports/ 아래 자동)
 ```
 
 ### 실행 예시
@@ -358,6 +362,7 @@ python main.py -g 3
 python main.py --evolve                                     # 진화(GA)
 python main.py --evolve --pop 20 --generations 8 --seed 42  # 재현 가능한 진화
 python main.py --dex                                        # 포켓몬 도감
+python main.py --evolve --md                                # 진화 + Markdown 리포트 저장
 ```
 
 > 반드시 프로젝트 루트에서 실행. (`app.backend....` 절대 경로 import 구조)
@@ -365,26 +370,31 @@ python main.py --dex                                        # 포켓몬 도감
 ### 출력 예시 (실제 출력)
 
 ```text
-=== PocketQuant ===
+=== PocketQuant 단판 백테스트 ===
 
-데이터 로딩 (SPY · 4개 국면)
+1. 데이터 로딩: SPY 실데이터 4개 국면
 
-전략 생성
-VOL + MOM
-이름: 타이탄 마스터
+2. 전략 생성
+  유전자: VOL + MOM
+  이름: 타이탄 마스터
 
-시장별 백테스트 (실데이터)
-  FINANCIAL_CRISIS   CAGR   -6.7%  MDD  -19.5% (시장  -55.2%)  BST 174.5
-  COVID              CAGR   13.2%  MDD  -10.9% (시장  -33.7%)  BST 236.0
+3. 시장별 백테스트 결과
+  2008 금융위기 체육관 연수익   -5.0%  최대낙폭  -15.0%  시장낙폭  -51.9%  종족치 192.9점
+  2020 코로나 급락 체육관 연수익   -7.9%  최대낙폭  -10.9%  시장낙폭  -33.7%  종족치 175.8점
+  2017 불타입 상승장 체육관 연수익   21.8%  최대낙폭   -2.6%  시장낙폭   -2.6%  종족치 192.6점
+  2015-2016 횡보장 체육관 연수익   -1.8%  최대낙폭  -13.9%  시장낙폭  -13.0%  종족치  90.9점
 
-스탯블록 (종합)
-    HP   (자본력)   56.4  ###########
-    ATK  (공격력)   38.1  ########
-    DEF  (방어력)   45.8  #########
-    SKILL(솜씨)     14.9  ###
+4. 종합 스탯
+  체력   HP    현금 비중    38.6점  ########
+  공격력 ATK   연수익       53.5점  ###########
+  방어력 DEF   하락 방어     34.7점  #######
+  솜씨   SKILL 샤프       36.2점  #######
 
-종족치(BST) 155.1 / 400   적합도 38.8   등급 C
+종족치 합계 163.0 / 400
+최종 적합도 40.8점   등급 C
 ```
+
+> 출력 포맷은 service.py 기준(수시 변경 가능). 위는 예시 스냅샷.
 
 ### 등급 규칙 (적합도 = 스탯 가중평균 0~100)
 
