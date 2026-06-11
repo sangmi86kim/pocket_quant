@@ -1,532 +1,152 @@
-# PocketQuant CLI Backend Harness v0.3
+# PocketQuant — 에이전트 작업 사양서 (v0.5+, 2026-06-11 기준)
 
-> 이 문서는 **현재 코드 기준**으로 작성된 사양서다. (코드가 source of truth)
-> "향후 확장 로드맵" 항목만 아직 미구현이며, 그 외는 실제 코드와 일치한다.
-
-## 목표
-
-PocketQuant의 CLI-only 백엔드 하네스.
-
-전략 포켓퀀트을 생성하고, 여러 시장 국면에서 **실데이터 백테스트**를 수행해
-HP/ATK/DEF/SKILL 4스탯을 뽑은 뒤 결과를 출력한다.
-
-## 범위
-
-- GUI 없음
-- DB 없음
-- **실데이터 사용**: yfinance로 SPY 가격을 받아 백테스트 (디스크 캐시 → 이후 오프라인)
-- LLM 없음
-- 김박사/오박사 없음
-- CLI 실행만 지원
-
-> ⚠️ v0.3에서 **생존/사망 이진판정을 폐기**했다. "상폐(0원)만 아니면 진 게 아니다" →
-> 모든 결과를 연속 스탯(0~100)으로 잰다. 페널티(0점 처리) 없음.
+> 이 문서는 **이 레포에서 작업하는 코딩 에이전트를 위한 온보딩 문서**다.
+> 코드가 source of truth — 문서와 코드가 다르면 코드가 맞고, 문서를 고친다.
+> 사람용 소개는 [README.md](README.md), 최적화 정식화는 [OPTIMIZATION.md](OPTIMIZATION.md).
 
 ---
 
-## 모듈 책임 (한 줄 정의 — 이 역할 경계를 지킨다)
+## ⚠️ 절대 규칙 (작업 전 숙지)
 
-> **main은 받고, service는 흐름 짜고, dex는 설명하고, signals는 판단하고, battle은 싸우고, evolve는 진화시킨다.**
-
-| 모듈 | 한 줄 책임 |
-|------|-----------|
-| `main.py`           | **받고** — config.json을 읽어 service에 넘긴다 (CLI 플래그/argparse 없음) |
-| `service.py`        | **흐름 짜고** — 단판/진화/도감 실행 순서를 조립하고 출력한다 |
-| `genes/dex.py`      | **설명하고** — 유전자(포켓퀀트) 설명 카드를 제공한다 |
-| `genes/signals.py`  | **판단하고** — 유전자가 가격을 보고 포지션(0~1) 또는 기권(NaN)을 정한다 |
-| `engine/battle.py`  | **싸우고** — 포지션으로 백테스트해 스탯을 뽑는다 |
-| `engine/evolve.py`  | **진화시킨다** — GA로 전략 개체군을 세대 진화시킨다 |
-| (보조) `market/data.py` 땡겨오고 · `market/gym.py` 무대 · `engine/strategy.py` 만들고 · `core/models.py` 모양 정의 |
+1. **퍼블릭 레포다.** 사용자의 개인 정보·직장/업무 맥락을 코드·문서·**커밋 메시지** 어디에도
+   쓰지 않는다. 개인 맥락 기록은 gitignore 영역(`worklog/`)에만. (히스토리 재작성까지 간 전례 있음)
+2. **argparse/CLI 플래그 금지.** 실행 옵션은 전부 `config.json` (사용자 확정 결정).
+3. **골든 넘버 규약.** 엔진 계산을 건드리면 `python tests/test_engine_regression.py`가 어긋난다 —
+   ① 의도한 설계 변경이면 골든 갱신 + worklog에 사유 기록 ② 아니면 버그, 커밋 금지.
+4. **룩어헤드(컨닝) 금지.** 시그널은 과거만 본다. 시그널 추가/수정 시 `tests/test_no_lookahead.py` 필수.
+5. **hold-out(2020-07~)은 소진됐다** (2026-06-11 사천왕전 1회 사용). 그 구간을 보고 적합도·
+   가중치·파라미터를 고치는 것 = 오염 = 반칙. 이후 최종 판정은 미래 데이터로만.
+6. **최적화 목적에 HP(현금 비중)·BST·0~100 클램프 스탯 금지** — raw 지표만. ('잠만보 퇴화' 3회 봉인 전례)
+7. **사망 판정 금지.** 슬로건: "상폐가 아니면 뒤진 게 아니다". 판정 언어는 생존/탈락이 아니라
+   **도전권/벤치** (벤치 = 명단 보존, 재도전 가능).
+8. **오박사(LLM)는 해설 전용** — 판정·합불·매매 권유 금지. LLM을 적합도 루프에 넣지 않는다.
+9. **용어**: 시그널 = 포켓퀀트(세는 단위 '마리') · 전략 = 트레이더(세는 단위 '명').
+   '포켓몬'은 README 도입부 비유·법적 고지 두 곳에만 존재한다.
+10. **코드 스타일**: 한국어 왜-주석(설계 이유·실측 근거) 중심, `from __future__` 금지,
+    타입 힌트는 시그니처에만 절제, 튜닝 상수는 모듈 상단에 모음. 과한 추상화 금지.
 
 ---
 
-## 프로젝트 구조 (백엔드 = 기능별 서브패키지)
+## 세계관 용어 (코드·출력에 그대로 쓰임)
+
+| 용어 | 뜻 |
+|---|---|
+| 포켓퀀트 (6마리) | 시그널 — DD/VOL(위험회피) · MA/MOM(추세) · REV_RSI/REV_BB(역발상 이벤트형) |
+| 트레이더 | 전략 = 포켓퀀트들을 어떤 가중치로 데려가는가 (NSGA-III 트라이얼 1개 = 트레이더 1명) |
+| 체육관 (6개) | QQQ 실데이터 시장 국면. 관장: 버블/리먼/불사조/브이/황소/미로 |
+| 성실이 | 라이벌 DCA 봇 — 매일 1/N 적립, **수수료 0원**(토스 자동 모으기). 이길 대상 |
+| 잠만보 | '전부 현금' 기준선 — 퇴화 게이트(test_baselines)가 상시 감시 |
+| 챔피언로드 | 검증 관문: ①리그 본선(OOS 연도) ②배틀 프론티어(평행세계) ③사천왕(hold-out, 소진) |
+| 오박사 | 로컬 LLM 해설 NPC (LM Studio, `"oak": true`) — 한강 둔치 쌉고인물 |
+| 에그랩 | 새 포켓퀀트 부화 연구소 (`egglab/README.md`) — 다음 알파 |
+
+---
+
+## 구조 (3층: main → service → backend)
 
 ```text
 pocket_quant/
-├─ main.py                   # 받고 — config.json 읽어 service 호출 (argparse 없음)
-├─ config.json               # 실행 옵션 (mode/genes/pop/generations/seed/md/capital)
-├─ requirements.txt          # yfinance · pandas · numpy
-├─ data_cache/               # (gitignore) 다운로드한 가격 CSV 캐시
+├─ main.py                    # config.json 읽어 service 호출
+├─ config.json                # 실행 옵션 (아래 표)
+├─ OPTIMIZATION.md            # 최적화 정식화 + NSGA-III 설계 + 함정 3개 기록
+├─ egglab/README.md           # 새 시그널 부화 절차·알 후보 (다음 알파)
+├─ character/                 # 캐릭터 이미지 (dr_oh.png, monsieur.png — 커밋됨)
 ├─ app/
-│  ├─ __init__.py
-│  ├─ service.py             # 흐름 짜고 — 단판/진화/도감 순서 + 시드 + 출력
+│  ├─ service.py              # 실행 흐름 조립 + 출력 포맷 (단판/진화/nsga3/도감)
+│  ├─ oak.py                  # 오박사 — LM Studio(OpenAI 호환, localhost:1234) 해설
 │  └─ backend/
-│     ├─ core/               # 토대
-│     │  └─ models.py        #   모양 정의 — Stats/Strategy/Gym/Report + 스탯가중치/등급
-│     ├─ market/             # 시장(데이터·무대)
-│     │  ├─ data.py          #   땡겨오고 — yfinance 다운로드 + 디스크 캐시
-│     │  └─ gym.py           #   무대 — 체육관 정의 (실제 시장 국면 기간)
-│     ├─ genes/              # 유전자(시그널·도감)
-│     │  ├─ signals.py       #   판단하고 — 지표 → 포지션(0~1)/기권(NaN), 결합 규칙
-│     │  └─ dex.py           #   설명하고 — 포켓퀀트 도감(SIGNAL_CARDS)
-│     └─ engine/             # 엔진(전투·생성·진화)
-│        ├─ battle.py        #   싸우고 — 실데이터 백테스트 → 스탯 산출
-│        ├─ strategy.py      #   만들고 — 전략 생성 + 이름 자동 생성
-│        └─ evolve.py        #   진화시킨다 — 단일목적 GA (적합도=스탯 가중합)
-├─ tests/
-│  ├─ test_baselines.py      # 적합도 퇴화 검증 ('전부 현금'/'항상 풀매수' 기준선)
-│  ├─ check_signals.py       # 시그널 진단 (노출/발동률/상관 — 풀 교체 시마다 실행)
-│  └─ walk_forward.py        # 워크 포워드 (과거 4년 선발→다음 1년 OOS 출전, 1999~)
-├─ worklog/                  # 실험실 노트 (리뷰·계획서·검증 결과)
-├─ README.md
-└─ AGENTS.md
+│     ├─ core/models.py       # Stats/Strategy/Gym/BattleResult/Report + 적합도
+│     ├─ market/data.py       # yfinance + data_cache/ 캐시 (WARMUP_DAYS=400)
+│     ├─ market/gym.py        # 체육관 6개 (전부 QQQ) — post-COVID 추가 금지 주석 참고
+│     ├─ genes/signals.py     # 시그널 → 포지션(0~1)/기권(NaN), 기권 제외 (가중)평균 결합
+│     ├─ genes/dex.py         # 도감 (SIGNAL_CARDS + GYM_LEADERS + NPC_CARDS)
+│     └─ engine/
+│        ├─ battle.py         # _score_position(공용 채점기) · fight · fight_dca(성실이)
+│        │                    #   · score_vs_dca · 비용 0.1%/편도 (성실이만 무비용)
+│        ├─ strategy.py       # 트레이더 생성 + 이름
+│        ├─ evolve.py         # 손코딩 단일목적 GA (교보재로 유지)
+│        └─ nsga3.py          # Optuna NSGA-III — 6목적, 기본 가중치 전용(A안)
+├─ tests/                     # 심판단 + 챔피언로드 (아래 표)
+├─ worklog/                   # (gitignore) 실험 노트 — 개인 맥락은 여기만
+└─ reports/                   # (gitignore) HTML/MD 리포트 출력
 ```
 
-> 참고: 3층 분리 — `main.py`(입력) → `app/service.py`(흐름 조립·출력) → `app/backend/*`(계산).
-> backend 의존 방향: `core ← market/genes ← engine` (engine이 최상위 소비자, 순환 없음).
-> 출력 포맷은 별도 `report.py` 없이 `service.py` 안에서 처리한다.
-> tests 실행: `python tests/test_baselines.py` · `python tests/check_signals.py` ·
-> `python tests/walk_forward.py` (test_baselines는 pytest도 호환).
+의존 방향: `core ← market/genes ← engine` (순환 없음). 데이터 I/O는 data.py 전담, battle은 순수 계산.
 
 ---
 
-## core/models.py
-
-데이터의 '모양'만 정의한다. 로직은 최소.
-
-### 상수 (모듈 레벨)
-
-```python
-STAT_WEIGHTS = {"HP": 0.0, "ATK": 1.0, "DEF": 1.0, "SKILL": 1.0}   # GA 적합도 가중치 = 진화 방향
-GRADES       = [(0.9, "S"), (0.7, "A"), (0.5, "B"), (0.3, "C"), (0.0, "D")]  # 적합도/100 기준
-```
-
-> **HP 가중치가 0인 이유 (퇴화 방지):** HP(현금 비중)를 적합도에 넣으면 '전부 현금'이
-> HP 100 + (구)DEF 100을 받아 "아무것도 안 하기"가 최적해가 된다(구 설계 실측: 전부
-> 현금 ~69점 vs 풀매수 ~29점). 현금은 수단이지 목표가 아니므로 HP는 **표시 전용**이고,
-> 적합도는 ATK/DEF/SKILL 3개 성과 스탯의 가중평균이다. 검증은 `tests/test_baselines.py`.
-
-> 유전자 명단(`ALL_GENES`)은 더 이상 models에 없다. 진짜 출처는 **signals.py의
-> `GENE_SIGNALS`/`ALL_GENES`** — 실제 시그널을 가진 유전자만이 진짜 유전자다.
-> (옛 `GENE_SCORES` 가짜 점수표와 `Strategy.base_score()`는 제거됨.)
-
-### Stats dataclass  (신규)
-
-```python
-hp: float; atk: float; def_: float; skill: float   # 각 0~100 정규화 (def는 예약어라 def_)
-# @property bst     -> 종족치 = 네 스탯 합 (0~400)
-# @property fitness -> 스탯 가중평균 (0~100, STAT_WEIGHTS 적용)
-```
-
-### Strategy dataclass
-
-```python
-genes: list[str]      # 예) ["DD", "RSI"]
-name: str = ""
-```
-
-### Gym dataclass
-
-```python
-name: str
-difficulty: int       # 연출용 메타데이터 (판정 미사용)
-volatility: int       # 연출용 메타데이터 (판정 미사용)
-ticker: str = "SPY"   # 그 시기를 재현할 자산
-start: str            # 평가 시작일 "YYYY-MM-DD"
-end: str              # 평가 종료일
-```
-
-### BattleResult dataclass
-
-```python
-gym_name: str
-stats: Stats              # 그 시장에서 뽑힌 HP/ATK/DEF/SKILL
-cagr: float              # 연율수익 (표시용)
-total_return: float      # 기간 총수익 (실투자 시뮬용: 시작자본 × (1+이값))
-market_return: float     # 단순보유 기간 총수익 (비교용)
-max_drawdown: float      # 내 전략 MDD (음수)
-market_drawdown: float   # 시장(단순보유) MDD (음수, 비교 표시용 — DEF 계산엔 미사용)
-```
-
-### Report dataclass
-
-```python
-strategy: Strategy
-results: list[BattleResult]
-# @property: stats(체육관별 평균 스탯), fitness, bst, grade
-```
-
----
-
-## engine/strategy.py
-
-### 역할
-
-전략 생성 및 이름 자동 생성.
-
-### 함수
-
-```python
-create_strategy(gene_count: int | None = None) -> Strategy
-make_name(genes: list[str]) -> str
-```
-
-### 규칙
-
-* gene_count가 없으면 1~5개 랜덤
-* 유전자 중복 없음 (`random.sample`)
-* 유전자 점수 합산 (`Strategy.base_score()`)
-* 이름 자동 생성
-
-### 이름 규칙
-
-```text
-RSI몬
-DD-RSI몬
-DD-RSI-MA몬
-```
-
-* 약 20% 확률로 특수 이름 부여 (예: "타이탄 드래곤") — **이미 구현됨**
-  * TITLES = ["ATH", "디아블로", "헤르메스", "타이탄"]
-  * SUFFIXES = ["몬", "드래곤", "킹", "마스터"]
-
----
-
-## market/gym.py
-
-### 기본 체육관 (4개) — 실제 시장 국면 기간
-
-각 체육관은 SPY 가격으로 그 기간을 백테스트한다. difficulty/volatility는 연출용 메타데이터(1~10).
-
-```text
-2008 금융위기 체육관     2008-01-01 ~ 2009-06-30   # 시스템 붕괴 대폭락 → 방어형 천국
-2020 코로나 급락 체육관   2020-02-01 ~ 2020-06-30   # V자 급락→즉시회복 (버티면 생존)
-2017 불타입 상승장 체육관 2017-01-01 ~ 2017-12-31   # 저변동성 우상향 (추세/모멘텀 강세)
-2015-2016 횡보장 체육관   2015-01-01 ~ 2016-12-31   # 방향 없는 출렁임 (추세형 헛신호)
-```
-
-> 폭락·급락·상승·횡보 4국면을 일부러 섞음(국면 다양성=과적합 방지). SPY(1993~)가 전부 커버.
-
-### 함수
-
-```python
-all_gyms() -> list[Gym]
-```
-
----
-
-## market/data.py
-
-파이프라인 1단계 = **모든 데이터 로딩(I/O)을 전담**한다. (battle은 계산만)
-yfinance로 가격을 받고 디스크에 캐시한다 (`data_cache/{ticker}_{start}_{end}.csv`).
-
-```python
-get_prices(ticker, start, end) -> pd.Series   # 수정종가. 캐시 우선 → 없으면 다운로드 후 저장
-load_gym(gym) -> LoadedGym                     # 체육관 1곳 가격 로딩(앞쪽 WARMUP_DAYS=400 버퍼 포함)
-load_gyms(gyms) -> list[LoadedGym]             # 전 체육관 한 번에 로딩
-
-@dataclass LoadedGym: gym: Gym; prices: pd.Series   # 체육관 + 미리 당겨둔 가격
-```
-
-* 캐시 우선이라 첫 실행만 네트워크, 이후 오프라인. 역사 기간은 값이 안 변하니 안전.
-* 미리 로딩해 두면 진화 모드에서 가격을 전략마다 다시 안 읽음 → **국면당 1회 로딩**.
-
----
-
-## genes/signals.py
-
-유전자 = 진짜 지표 로직. 가격을 받아 일별 포지션(0~1) 또는 **기권(NaN)** 을 만든다.
-
-**[2026-06-10 재배치] 3타입 × 2마리** (근거·검증: `worklog/2026-06-10_signal_rework_plan.md` + `_results.md`):
-
-```text
-💧 위험회피(상시형):
-  DD      : 리스크     - 고점 대비 -10% 넘게 빠지면 0 (드로다운 스탑)
-  VOL     : 시장 상태  - 변동성 레짐: 평온 1.0 / 중간 0.5 / 격동 0.0
-🔥 추세순응(상시형):
-  MA      : 추세       - 가격 > 200일 이평이면 1 (이평)
-  MOM     : 추세 강화  - 최근 ~63일(3개월) 수익률 양수면 1 (모멘텀)
-🌿 역발상(이벤트형 — 발동일만 의견, 평소 기권 NaN):
-  REV_RSI : 심리       - RSI(14) < 30 과매도 투매면 매수 의견 1.0
-  REV_BB  : 변동성     - 볼린저 하단밴드 아래 과대 낙폭이면 매수 의견 1.0
-```
-
-> 구 RSI(과열 감산)·BB(상단 감산)는 실측상 거의 상수 1(죽은 시그널)이라 **명단 제외**
-> (함수는 비교용으로 보존). 과열 회피는 양의 기대수익을 버리는 규칙이었다.
-
-```python
-GENE_SIGNALS = {"DD","VOL","MA","MOM","REV_RSI","REV_BB" -> 함수}  # 유전자 명단의 단일 출처
-ALL_GENES    = list(GENE_SIGNALS.keys())          # strategy.py / evolve.py가 여기서 import
-combine_positions(positions) -> pd.Series         # '기권 제외 평균' (전원 기권한 날 = 0.0)
-combined_position(genes, prices) -> pd.Series     # 유전자 이름 → 시그널 → combine_positions
-```
-
-* **기권(NaN) 규칙**: 이벤트형 시그널은 발동일에만 의견을 낸다. 기권을 0으로 집계하면
-  "의견 없음"="현금 가라"가 돼 상시 현금 앵커가 되므로(잉어킹 강제 출전 문제),
-  그날 의견 낸 시그널끼리만 평균한다. 전원 기권 = 포지션 0.0.
-* 튜닝 파라미터(MA_WINDOW, RSI_*, BB_*, DD_LIMIT, VOL_*, MOM_LOOKBACK)는 파일 상단 상수로 모음.
-  REV 발동 유지기간·과매도선·가중치는 의도적으로 미구현 — Optuna(NSGA-III) 결정변수 후보.
-
----
-
-## genes/dex.py (포켓퀀트 도감)
-
-판정엔 안 쓰는 '설명' 데이터. `mode: "dex"`로 출력하며 service가 읽어 포맷한다.
-
-```python
-from .signals import GENE_SIGNALS   # 명단 일치 검증용
-SIGNAL_CARDS = {유전자: {name, type, role, personality, effect, strength, weakness}}
-# 모듈 로드 시 assert set(SIGNAL_CARDS) == set(GENE_SIGNALS) — 도감/명단 불일치 즉시 차단
-```
-
-> 의존: `dex → signals` 단방향 (순환 없음).
-
----
-
-## engine/battle.py
-
-### 전투 로직 (실데이터 백테스트)
-
-가격은 LoadedGym으로 **이미 받아둔 상태**로 들어온다. battle은 I/O 없이 계산만.
-
-```text
-1) signals.combined_position → 일별 포지션, shift(1)로 하루 lag (룩어헤드 방지)
-2) strat_ret = position.shift(1) * market_ret − |Δposition| × TRADE_COST  → 자산곡선
-   TRADE_COST = 0.001 (토스증권 미국주식 위탁수수료 0.1%, 2025-12 상시화. 편도 과금)
-3) 워밍업 버퍼 잘라내고 평가 구간만 슬라이스 (window_start = gym.start)
-4) CAGR / MDD / 샤프 / 평균현금 측정
-5) 0~100 스탯 정규화:
-     HP    = 평균현금 * 100                    # 표시 전용 (적합도 가중치 0)
-     ATK   = scale(CAGR,  0 ~ +0.25)           # 안 벌면 0점 (구: -25%~+25%는 현금이 50점)
-     DEF   = scale(Calmar, -1 ~ 3)             # Calmar = CAGR/|내MDD|. 낙폭 0이면: 벌었으면 100, 아니면 25
-     SKILL = scale(샤프,  -1 ~ 3)
-```
-
-> 정규화 구간(ATK_CAGR_*, DEF_CALMAR_*, SKILL_SHARPE_*)은 battle.py 상단 상수 = 튜닝 포인트.
->
-> **DEF가 Calmar인 이유:** 구 설계 `1 - 내MDD/시장MDD`는 비중을 줄일수록 거의 1:1로
-> 점수가 올라 '전부 현금'이 방어 만점이었다. Calmar는 비중 일괄 축소에 거의 불변
-> (분자 CAGR·분모 MDD가 같이 줄어듦)이라 그 퇴화 경사가 없고, '낙폭을 적게 겪으며
-> 번 전략'만 방어 점수를 받는다.
-
-### 함수
-
-```python
-fight(strategy: Strategy, loaded: LoadedGym) -> BattleResult        # 한 시장 → 스탯블록
-challenge(strategy: Strategy, loaded_gyms: list[LoadedGym]) -> Report
-```
-
----
-
-## engine/evolve.py (단일목적 GA)
-
-### 역할
-
-전략 개체군을 여러 세대 진화시켜 "종합 적합도(스탯 가중합)"가 가장 높은 전략을 찾는다.
-
-### 적합도 (단일목적)
-
-```text
-fitness = 종합 스탯 가중평균 (0~100, 숫자 하나) = report.fitness
-실데이터는 결정론적 → 평가는 1회만 돈다 (trials 개념 제거).
-```
-
-### GA 4단계 + 함수
-
-```python
-evaluate(strategy, loaded_gyms) -> {"fitness", "per_gym"(BST), "stats"}   # 1. 평가(1회)
-select(scored, keep) -> list[Strategy]                       # 2. 선택(절단)
-crossover(genes_a, genes_b) -> list[str]                     # 3. 교배(균등)
-mutate(genes, rate) -> list[str]                             # 4. 돌연변이(추가/제거)
-evolve(loaded_gyms, pop_size, generations, on_generation) -> (best, stats)
-```
-
-* `on_generation(gen, best, stats)` : 세대별 콜백 훅 (로깅/시각화/향후 early stop)
-
-### 관찰 (의도된 것)
-
-* 실데이터엔 진짜 트레이드오프(공격 vs 위험조정 방어)가 있어 **전 유전자 조합으로 안 수렴**한다.
-  (시그널 재배치 후 실측: 시드 42/7 모두 `VOL+REV_BB`(54.8점)로 수렴 — 전수조사 63조합 중 1위와 일치.
-  방어형(VOL) + 역발상(REV_BB)의 타입 조합 = 재배치가 의도한 상성 구조가 실제로 선택됨.)
-* 스탯들이 서로 당기는 이 충돌이 다목적(NSGA-III) 필요성의 근거.
-* `STAT_WEIGHTS`를 바꾸면 진화 방향(공격형/방어형)이 바뀐다. 단 HP는 0 고정이 기본
-  (올리면 '전부 현금' 퇴화가 되살아남 — `tests/test_baselines.py`로 확인 가능).
-
----
-
-## main.py + config.json
-
-### 역할
-
-**config.json을 읽어** `app/service.py`의 함수를 호출만 한다. argparse/CLI 플래그는
-쓰지 않는다(사용자 결정 — 옵션은 파일로 관리). 계산도 흐름 조립도 출력도 하지 않는다.
-config.json이 없으면 main.py의 DEFAULTS로 동작하고, 윈도우 편집기의 BOM도 처리한다(utf-8-sig).
-
-```python
-run_single(gene_count, seed, md_path, capital)        # service.py — 단판 흐름
-run_evolve(pop, generations, seed, md_path, capital)  # service.py — 진화 흐름
-run_pokedex()                                         # service.py — 도감(mode: "dex")
-```
-
-> `md`: Markdown 리포트 저장. `""`이면 `reports/pocketquant_{single|evolve}_report.md`,
-> 경로 문자열이면 그 경로, `null`이면 저장 안 함.
->
-> `capital`: 실전 시뮬. 국면마다 `시작자본 × (1 + total_return)` = 최종 잔고를
-> 단순보유와 함께 표시. 체육관은 서로 다른 시대라 **국면별 독립** 시뮬(연속 복리 아님).
-
-### 파이프라인 순서 (service.py가 조립)
-
-```text
-① 데이터 로딩   load_gyms(all_gyms())       [data.py]   ← 가장 먼저, 한 번만
-② 전략 만들기   create_strategy() / 개체군   [strategy.py / evolve.py]
-③ 전투(백테스트) challenge / fight            [battle.py] ← 가격 받아 계산만
-④ 결과          Report → 스탯블록 출력        [service.py]
-⑤ 진화(선택)    evolve가 ②③을 세대 반복      [evolve.py]
-```
-
-> 데이터·전략은 서로 독립이고 ③ battle에서 처음 만난다.
-> 데이터 로딩(I/O)은 data.py가 전담, battle은 순수 계산 → 책임 분리.
-
-### config.json 옵션
+## 핵심 설계 (현재 값)
+
+- **체육관 6개, 전부 QQQ** (훈련 자산 = 실투자 자산): 닷컴(2000-03~02-12) · 금융위기(2008-01~09-06) ·
+  회복장(2009-03~10-12) · 코로나V(2020-02~06) · 상승장(2017) · 횡보장(2015~16).
+  **post-COVID(2020-07~)는 훈련 체육관 추가 금지** (사천왕 — 소진됐어도 훈련 오염 금지는 유지).
+- **스탯(0~100, 표시용)**: HP=평균현금(적합도 가중 0) · ATK=CAGR(0~25%) · DEF=Calmar(-1~3) ·
+  SKILL=샤프(-1~3). 정규화 구간은 battle.py 상단 상수.
+- **적합도(단일목적) = 체육관별 fitness의 [평균 70% + 최약 30%]** (models.Report).
+  50/50은 잠만보 부활로 기각 — min 가중 0.3이 퇴화 게이트를 지키는 실측 최대치.
+- **거래비용**: 트레이더 0.1%/편도(턴오버 과금) vs 성실이 0원 — 비대칭이 현실 모델.
+- **결합**: `combine_positions(positions, weights=None)` — 기권(NaN) 제외 (가중)평균.
+  분모에 Σw = 예산제약 내장. weights=None은 동일가중과 비트 동일(골든 보호).
+- **NSGA-III (mode: "nsga3")**: 목적 = [bear=min(닷컴,GFC), rebound, crash_v, bull, chop]
+  score_vs_dca maximize + turnover minimize. `tune_params=False`가 기본 —
+  v1(파라미터 13차원)은 챔피언로드에서 과적합 전멸(인샘플↔OOS 상관 -0.21), v2(가중치 6)는 +0.93.
+- **score_vs_dca** = 0.4×수익차 + 0.4×낙폭개선 + 0.2×샤프차 (성실이 대비, raw만).
+  ⚠️ 평균으로 뭉개 단일 적합도로 쓰지 말 것(잠만보 부활 실측) — 벡터 그대로.
+
+## 심판단 (tests/) — 전부 루트에서 `python tests/<파일>.py`
+
+| 파일 | 역할 | 성격 |
+|---|---|---|
+| test_baselines.py | 잠만보 감시 — 전부현금<풀매수 & 하위25% | 게이트 (커밋 전) |
+| test_engine_regression.py | 골든 넘버 — 엔진 계산 불변 확인 | 게이트 (커밋 전) |
+| test_no_lookahead.py | 컨닝 검사 — 미래 절단 후 과거 포지션 불변 | 게이트 (시그널 변경 시) |
+| test_weighted_combine.py | 가중 결합 불변식 5종 | 게이트 (결합 변경 시) |
+| check_signals.py | 노출/발동률/상관 — 새 시그널의 '새 정보' 검사 | 진단 |
+| check_dca.py | 성실이 기준선 + score_vs_dca 전수조사 | 진단 |
+| walk_forward.py | 선발 과정 OOS (파라미터로 자산/기간/비용 민감도) | 검증 |
+| victory_road.py | 챔피언로드 관문① — 졸업생 OOS 연도 시험 + 스페셜리스트 트랙 | 검증 |
+| battle_frontier.py | 관문② — 블록 부트스트랩 평행세계 운빨 검사 | 검증 |
+| elite_four.py | 관문③ — hold-out (소진. 재실행은 참고용일 뿐) | 봉인 해제됨 |
+| inspect_front.py / report_nsga3.py | 스터디 분석 / HTML 리포트 생성 | 도구 |
+
+## config.json (전체 키)
 
 ```jsonc
 {
-    "mode": "single",     // single(단판) | evolve(진화 GA) | dex(도감)
-    "genes": null,        // [단판] 유전자 개수 (null = 랜덤)
-    "pop": 20,            // [진화] 개체군 크기 (내부 최소 2)
-    "generations": 10,    // [진화] 세대 수 (내부 최소 1)
-    "seed": null,         // 랜덤 시드 (null = 매번 다름, 숫자 = 재현 가능)
-    "md": null,           // Markdown 리포트: null=안 씀, ""=기본 경로, "경로"=지정
-    "capital": null       // 실전 시뮬 시작 자본(원). 예) 10000000
+  "mode": "single",      // single | evolve | nsga3 | dex
+  "genes": null,         // [single] 포켓퀀트 수 (null=랜덤)
+  "pop": 20, "generations": 10,   // [evolve]
+  "seed": null,          // 랜덤 시드
+  "md": null,            // MD 리포트: null=안 씀, ""=기본 경로, "경로"
+  "capital": null,       // 실전 시뮬 시작 자본(원)
+  "trials": 600,         // [nsga3] 트라이얼 수
+  "storage": null,       // [nsga3] 예: "sqlite:///optuna_pocketquant.db" (중단/재개)
+  "study": "nsga3_v2_weights",    // [nsga3] 스터디 이름
+  "tune_params": false,  // [nsga3] true=파라미터도 탐색 (v1 과적합 — 고도화용)
+  "oak": false           // true=리포트 끝 오박사 브리핑 (LM Studio 필요)
 }
 ```
 
-### 실행 예시
-
-```bash
-python main.py    # config.json의 mode대로 실행 — 옵션을 바꾸려면 config.json 수정
-```
-
-```jsonc
-// 재현 가능한 진화:   { "mode": "evolve", "seed": 42 }
-// 유전자 3개 단판:    { "mode": "single", "genes": 3 }
-// 도감 출력:          { "mode": "dex" }
-// 진화 + 리포트 저장: { "mode": "evolve", "md": "" }
-```
-
-> 반드시 프로젝트 루트에서 실행. (`app.backend....` 절대 경로 import 구조)
-
-### 출력 예시 (실제 출력)
-
-```text
-=== PocketQuant 단판 백테스트 ===
-
-1. 데이터 로딩: SPY 실데이터 4개 국면
-
-2. 전략 생성
-  유전자: REV_BB + DD
-  이름: 헤르메스 드래곤
-
-3. 시장별 백테스트 결과
-  2008 금융위기 체육관      연수익   -5.9%  전략 최대낙폭  -16.5%  시장 최대낙폭  -51.9%  종족치 115.7점
-  2020 코로나 급락 체육관    연수익  -10.6%  전략 최대낙폭  -16.2%  시장 최대낙폭  -33.7%  종족치  79.7점
-  2017 불타입 상승장 체육관   연수익   21.8%  전략 최대낙폭   -2.6%  시장 최대낙폭   -2.6%  종족치 286.2점
-  2015-2016 횡보장 체육관  연수익    0.9%  전략 최대낙폭  -18.9%  시장 최대낙폭  -13.0%  종족치  61.0점
-
-4. 종합 스탯
-  체력   HP    현금 비중    37.3점  #######
-  공격력 ATK   연수익       22.7점  #####
-  방어력 DEF   낙폭대비수익    37.7점  ########
-  솜씨   SKILL 샤프       38.0점  ########
-
-종족치 합계 135.7 / 400
-최종 적합도 32.8점   등급 C
-```
-
-> 출력 포맷은 service.py 기준(수시 변경 가능). 위는 예시 스냅샷.
-
-### 등급 규칙 (적합도 = ATK/DEF/SKILL 가중평균 0~100, HP 제외)
-
-```text
-S: 적합도 >= 90
-A: 적합도 >= 70
-B: 적합도 >= 50
-C: 적합도 >= 30
-D: 그 외
-```
-
 ---
 
-## 개발 원칙
+## 현재 상태 스냅샷 (2026-06-11)
 
-### 유지
+- **챔피언**: 동일가중 `VOL+REV_RSI+REV_BB` 42.6점 — 시드 42/7 수렴 = 전수조사 1위.
+  챔피언로드 관문 ①(유일 도전권)·②(승률 69%/방어 98%) 통과.
+- **사천왕전 결과: 벽** — 연 단위 라이벌전 평균 -2.7(FAIL) / 방어 PASS(MDD -17.4% vs -35.1%).
+  단 6년 누적은 성실이 전 지표 우위(CAGR +13.5% vs +11.1%, 샤프 1.02 vs 0.92) —
+  "성실이를 매년 이기는 알파"는 아니고 "DCA 코어 위 방어 오버레이"로 가치 입증.
+- **가중치 천장 확인**: 리그 v2에서 가중치 조정만으론 챔피언을 못 넘음 — 새 알파는 새 시그널에서.
+- **스페셜리스트**: #1918(bear 1위) — 하락 평행세계 승률 86%/방어 100%. Regime Scanner
+  Defensive 틸트 1호 후보 (스터디 DB `nsga3_v2_weights`에 보존).
+- **버전 히스토리(압축)**: v0.2 GA → v0.3 실데이터+스탯 → v0.3.1 잠만보 1차 봉인 →
+  v0.3.2 거래비용 → v0.4 시그널 재배치+기권 결합+config → v0.4.1 worst-case 적합도(70/30) →
+  v0.5 QQQ 6체육관+성실이+심판단+NSGA-III+챔피언로드+오박사. 상세는 worklog/(로컬).
 
-* 단순한 CLI MVP
-* 실행 가능한 코드 우선
-* 200~300줄 내외
-* 구조는 확장 가능하게
+## 다음 작업 (우선순위)
 
-### 금지
-
-* GUI
-* DB
-* 웹서버
-* 실시간 시세 / 투자 API (백테스트용 과거 데이터 yfinance만 허용)
-* LLM
-* 김박사/오박사
-* 과도한 추상화
-
----
-
-## 구현 완료
-
-### v0.2 단일목적 GA  ✅
-* 개체군 + 선택(절단) + 교배(균등) + 돌연변이 + 세대 반복 (`evolve.py`)
-* `--seed`로 재현 가능, 세대별 콜백 훅
-
-### v0.3 실데이터 + 스탯블록  ✅
-* `data.py`(yfinance+캐시), `signals.py`(유전자=진짜 지표) 추가
-* `battle.fight()` 랜덤 → 진짜 백테스트, 생존판정 폐기 → HP/ATK/DEF/SKILL 4스탯
-* GA 적합도 = 스탯 가중합(BST 기반), trials 평균 제거(결정론적)
-
-### v0.3.1 적합도 퇴화 수정  ✅
-* 문제: 동일가중 적합도에서 '전부 현금'이 ~69점으로 거의 최고점 (HP 100 + 구DEF 100)
-* 수정: HP 가중치 0(표시 전용) · ATK 스케일 0%~+25% · DEF = Calmar(CAGR/|MDD|)
-* 검증: `tests/test_baselines.py` — 전 조합 63 + 기준선 2 줄세우기에서
-  '전부 현금' 65위/65(16.7점) < '항상 풀매수' 5위(38.2점) 확인
-* GA 챔피언: VOL 단일(현금 의존) → `RSI+VOL`(42.1점, 시드 42/7 동일, 전수조사 1위와 일치)
-
-### v0.3.2 거래비용  ✅
-* `TRADE_COST = 0.001` — 토스증권 미국주식 위탁수수료 0.1%(2025-12 상시화) 기준.
-  `strat_ret -= |Δposition| × TRADE_COST` (편도 과금, 평가 구간 내 매매만)
-* 효과: 고회전 조합 일괄 하락(RSI+VOL -2.6점), 무매매인 풀매수는 3위로 상승.
-  챔피언 `RSI+VOL` → `VOL` 단일(40.0점, 전수조사 1위와 일치)
-* 관찰: 비용 반영 후 최고 전략(40.0) vs 풀매수(38.2) 격차가 1.8점뿐 —
-  **현 시그널 풀은 현실적 비용 아래서 단순보유를 거의 못 이긴다** = 시그널 정비의 근거
-
-### v0.4 스타팅 6마리 재배치 + 기권 결합 + config + 백엔드 재구성  ✅
-* **시그널 풀 = 3타입 × 2마리**: DD/VOL(위험회피) + MA/MOM(추세) + REV_RSI/REV_BB(역발상, 신규).
-  죽은 시그널이던 구 RSI(과열)·BB(상단)는 명단 제외 (함수는 보존).
-* **기권(NaN) 결합**: 이벤트형 시그널은 발동일만 의견, 평소엔 평균에서 제외.
-  전원 기권 = 0.0. 게이트: 기존 조합 252개 회귀 오차 0 확인.
-* 검증(상세: `worklog/2026-06-10_signal_rework_results.md`): REV 페어는 상시형과 전부
-  음의 상관(새 정보) · 신챔피언 `VOL+REV_BB` 54.8점(구 40.0)으로 4체육관 전부 개선
-  (코로나 +2.8%→+12.2%) · SPY 4시대 모두 MDD 개선 + 샤프 동급 이상(4/4 PASS).
-* main.py argparse 제거 → **config.json** (사용자 결정: CLI 플래그 금지).
-* backend를 기능별 서브패키지(core/market/genes/engine)로 재구성 — 동작 동일 확인.
-
----
-
-## 향후 확장 로드맵 (미구현)
-
-### 다음: 다목적 최적화 (NSGA-III)
-
-* 단일 적합도(스탯 가중합) → **스탯 4개 = 각각의 목적**
-* 결과 = 최강 전략 1개가 아니라 **전략 Pareto front** (국면별 특화 + 올라운더)
-* v0.3에서 관찰한 스탯 충돌(공격 vs 방어/현금)이 목적함수 정의의 근거.
-
-### 정비
-
-* `tests/` 확장 (test_strategy / test_gym / test_battle / test_evolve — test_baselines는 완료)
-  * 전략 생성·중복 없음·gene_count 일치 / 체육관 목록·difficulty 존재
-  * fight 결과 스탯 범위·seed 재현성 / GA 수렴·교배·돌연변이
-
-### 전략 도감
-
-* 전략 저장 / 전적 기록 / 생존률 누적
-
-### v1.0 김박사 NPC
-
-* 룰베이스 대사
-* 이후 LLM 연결
+1. **에그랩 부화 1호** — `egglab/README.md`의 알 후보(VIX/TNX/QQQ-SPY/SOX-QQQ/DXY)에서 선택,
+   부화 절차 6단계(컨닝→새 정보 상관→미시→예선→리그→챔피언로드)
+2. **웜스타트 시드 제너레이터** — 다음 리그 전 필수 (`study.enqueue_trial`, v2에서 필요성 실증)
+3. **Regime Scanner + 70/30 오버레이** — #1918 틸트 후보 대기
+4. **아카데미(cGAN)** — 장기. 나스닥 학습, 국면 라벨 조건 합성. 학습 재료도 hold-out 규칙 적용
