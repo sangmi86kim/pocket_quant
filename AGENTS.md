@@ -1,4 +1,4 @@
-# PocketQuant — 에이전트 작업 사양서 (v0.5+, 2026-06-11 기준)
+# PocketQuant — 에이전트 작업 사양서 (v1.x, 2026-06-13 기준)
 
 > 이 문서는 **이 레포에서 작업하는 코딩 에이전트를 위한 온보딩 문서**다.
 > 코드가 source of truth — 문서와 코드가 다르면 코드가 맞고, 문서를 고친다.
@@ -36,8 +36,8 @@
 
 | 용어 | 뜻 |
 |---|---|
-| 포켓퀀트 (6마리) | 시그널 — DD/VOL(위험회피) · MA/MOM(추세) · REV_RSI/REV_BB(역발상 이벤트형) |
-| 트레이더 | 전략 = 포켓퀀트들을 어떤 가중치로 데려가는가 (NSGA-III 트라이얼 1개 = 트레이더 1명) |
+| 포켓퀀트 (13마리) | **스타팅 6** (DD/VOL/MA/MOM/REV_RSI/REV_BB) + **야생 7** (VOL_SPIKE/FEAR/US10Y/DXY/SPY_TLT/QQQ_SPY/QQQ_DIA, v1.x 2026-06-13 잡힘) |
+| 트레이더 | 전략 = 포켓퀀트들을 어떤 가중치로 데려가는가 (Optuna 트라이얼 1개 = 트레이더 1명) |
 | 체육관 (6개) | QQQ 실데이터 시장 국면. 관장: 버블/리먼/불사조/브이/황소/미로 |
 | 성실이 | 라이벌 DCA 봇 — 매일 1/N 적립, **수수료 0원**(토스 자동 모으기). 이길 대상 |
 | 돼지저금통 | '전부 현금' 기준선(0%) — 투자자 현타용(저축왕 3%와 대비). 퇴화 게이트(tools/test_baselines.py)가 상시 감시 |
@@ -80,9 +80,11 @@ pocket_quant/
 │     │  ├─ battle.py         # _score_position(공용 채점기) · fight · fight_dca(성실이)
 │     │  │                    #   · score_vs_dca · 비용 0.1%/편도 (성실이만 무비용)
 │     │  ├─ strategy.py       # 트레이더 생성 + 이름
-│     │  └─ nsga3.py          # Optuna NSGA-III — 6목적, 기본 가중치 전용(A안)
+│     │  ├─ nsga3.py          # Optuna NSGA-III — 다목적 6개 (가중치 전용 v2)
+│     │  ├─ tpe.py            # Optuna TPE — 단일목적 잔고 합 max (v1 챔피언 출신)
+│     │  └─ cma_es.py         # Optuna CMA-ES — 단일목적, 연속 공간 강함 (v1.x 신설)
 │     └─ data_io/             # 입력/리포팅 파이프라인 (워크플로우 아님)
-│        ├─ data.py           #   yfinance + data_cache/<ticker>/ 캐시 (WARMUP_DAYS=400)
+│        ├─ data.py           #   yfinance + get_prices + get_volume + data_cache/<ticker>/
 │        ├─ inspect_front.py · report_nsga3.py · battle_frontier_total.py  # 스터디 → CSV/HTML/MD
 │        └─ (예정) kis_client.py  # KIS API 외인기관/호가/체결 — 새 시그널 원천
 │
@@ -116,9 +118,16 @@ pocket_quant/
 - **거래비용**: 트레이더 0.1%/편도(턴오버 과금) vs 성실이 0원 — 비대칭이 현실 모델.
 - **결합**: `combine_positions(positions, weights=None)` — 기권(NaN) 제외 (가중)평균.
   분모에 Σw = 예산제약 내장. weights=None은 동일가중과 비트 동일(골든 보호).
-- **NSGA-III (mode: "nsga3")**: 목적 = [bear=min(닷컴,GFC), rebound, crash_v, bull, chop]
-  score_vs_dca maximize + turnover minimize. `tune_params=False`가 기본 —
-  v1(파라미터 13차원)은 챔피언로드에서 과적합 전멸(인샘플↔OOS 상관 -0.21), v2(가중치 6)는 +0.93.
+- **시그널 풀 (2026-06-13 v1.x)**: 13마리. 스타팅 6(가격 기반) + 야생 7(외부 정보원).
+  외부 정보원은 yfinance로 받음 (`^VIX`, `^TNX`, `UUP`, `SPY`, `TLT`, `QQQ`, `DIA`).
+  외부 데이터 없는 시기는 자동 NaN 기권 (UUP는 2007년~).
+- **옵티마이저 3종** (`app/backend/engine/`):
+  - `nsga3.py` — **다목적**. 6목적 score_vs_dca (5국면 + turnover). Pareto 라인업.
+  - `tpe.py` — **단일목적 Bayesian**. 잔고 합 max. v1 챔피언(TPE-s11)이 여기서 나옴.
+  - `cma_es.py` — **단일목적 CMA-ES**. 연속 공간 강함. NSGA 계열 친숙 (사용자 본업).
+  셋 다 같은 인터페이스 (`run_study(trials, seed, storage, study_name, load_if_exists=False, ...)`).
+- **NSGA-III 목적**: [bear=min(닷컴,GFC), rebound, crash_v, bull, chop] score_vs_dca
+  maximize + turnover minimize. `tune_params=False`가 기본 (v1 과적합 전멸 사례).
 - **score_vs_dca** = 0.4×수익차 + 0.4×낙폭개선 + 0.2×샤프차 (성실이 대비, raw만).
   ⚠️ 평균으로 뭉개 단일 적합도로 쓰지 말 것(돼지저금통 부활 실측) — 벡터 그대로.
 
@@ -132,8 +141,8 @@ pocket_quant/
 | test_weighted_combine.py | 가중 결합 불변식 5종 | 게이트 (결합 변경 시) |
 | check_signals.py | 노출/발동률/상관 — 새 시그널의 '새 정보' 검사 | 진단 |
 | check_dca.py | 성실이 기준선 + score_vs_dca 전수조사 | 진단 |
-| walk_forward.py | 선발 과정 OOS (파라미터로 자산/기간/비용 민감도) | 검증 |
-| e2e.py | 전 파이프라인 스모크 — 게이트/진단/walk_forward/NSGA-III 한 번에 (10초 이내) | 큰 변경 후 |
+| walk_forward.py | 선발 과정 OOS (legacy 클램프 스탯 GA 기반 — 새 풀에선 별도 사용) | 참고 |
+| e2e.py | 전 파이프라인 스모크 (게이트 4 + 진단 2 + NSGA-III). walk_forward 제외 | 큰 변경 후 |
 
 ## 리그 (app/league/) — `python app/league/<파일>.py`
 
