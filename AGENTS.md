@@ -11,15 +11,16 @@
 1. **퍼블릭 레포다.** 사용자의 개인 정보·직장/업무 맥락을 코드·문서·**커밋 메시지** 어디에도
    쓰지 않는다. 개인 맥락 기록은 gitignore 영역(`worklog/`)에만. (히스토리 재작성까지 간 전례 있음)
 2. **argparse/CLI 플래그 금지.** 실행 옵션은 전부 `config.json` (사용자 확정 결정).
-3. **골든 넘버 규약.** 엔진 계산을 건드리면 `python tests/test_engine_regression.py`가 어긋난다 —
+3. **골든 넘버 규약.** 엔진 계산을 건드리면 `python tools/test_engine_regression.py`가 어긋난다 —
    ① 의도한 설계 변경이면 골든 갱신 + worklog에 사유 기록 ② 아니면 버그, 커밋 금지.
-4. **룩어헤드(컨닝) 금지.** 시그널은 과거만 본다. 시그널 추가/수정 시 `tests/test_no_lookahead.py` 필수.
+4. **룩어헤드(컨닝) 금지.** 시그널은 과거만 본다. 시그널 추가/수정 시 `tools/test_no_lookahead.py` 필수.
 5. **hold-out(2020-07~)은 소진됐다** (2026-06-11 사천왕전 1회 사용). 그 구간을 보고 적합도·
    가중치·파라미터를 고치는 것 = 오염 = 반칙. 이후 최종 판정은 미래 데이터로만.
 6. **최적화 목적에 HP(현금 비중)·BST·0~100 클램프 스탯 금지** — raw 지표만. ('돼지저금통 퇴화' 3회 봉인 전례)
+   *2026-06-13: 단일목적 GA(`evolve.py`) 제거 — NSGA-III만 운영. 이 규칙은 새 시그널/지표 추가 시도 유효.*
 7. **사망 판정 금지.** 슬로건: "상폐가 아니면 뒤진 게 아니다". 판정 언어는 생존/탈락이 아니라
    **도전권/벤치** (벤치 = 명단 보존, 재도전 가능).
-8. **오박사(LLM)는 해설 전용** — 판정·합불·매매 권유 금지. LLM을 적합도 루프에 넣지 않는다.
+8. **오박사(LLM)는 해설 전용** — 판정·합불·매매 권유 금지. LLM을 적합도 루프에 넣지 않는다. (위치: `app/lab/oak.py`)
 9. **용어**: 시그널 = 포켓퀀트(세는 단위 '마리') · 전략 = 트레이더(세는 단위 '명').
    '포켓몬'은 README 도입부 비유·법적 고지 두 곳에만 존재한다.
 10. **코드 스타일**: 한국어 왜-주석(설계 이유·실측 근거) 중심, `from __future__` 금지,
@@ -35,43 +36,67 @@
 | 트레이더 | 전략 = 포켓퀀트들을 어떤 가중치로 데려가는가 (NSGA-III 트라이얼 1개 = 트레이더 1명) |
 | 체육관 (6개) | QQQ 실데이터 시장 국면. 관장: 버블/리먼/불사조/브이/황소/미로 |
 | 성실이 | 라이벌 DCA 봇 — 매일 1/N 적립, **수수료 0원**(토스 자동 모으기). 이길 대상 |
-| 돼지저금통 | '전부 현금' 기준선(0%) — 투자자 현타용(저축왕 3%와 대비). 퇴화 게이트(test_baselines)가 상시 감시 |
+| 돼지저금통 | '전부 현금' 기준선(0%) — 투자자 현타용(저축왕 3%와 대비). 퇴화 게이트(tools/test_baselines.py)가 상시 감시 |
 | 챔피언로드 | 검증 관문: ①리그 본선(OOS 연도) ②배틀 프론티어(평행세계) ③사천왕(hold-out, 소진) |
-| 오박사 | 로컬 LLM 해설 NPC (LM Studio, `"oak": true`) — 한강 둔치 쌉고인물 |
-| 에그랩 | 새 포켓퀀트 부화 연구소 (`egglab/README.md`) — 다음 알파 |
+| 오박사 | 로컬 LLM 해설 NPC (LM Studio, `app/lab/oak.py`) — 한강 둔치 쌉고인물. 단판 5~7문장 브리핑 + labnotes 모드(`app/lab/oak_labnotes.py`) |
+| 실험실(lab) | 오박사 + 도감 + labnotes 모음 (`app/lab/`) — 메인 게임 루프 밖, 부재해도 본 게임 영향 X |
+| 에그랩 | 새 포켓퀀트 부화 연구소 (`app/lab/egglab/README.md`) — 다음 알파 |
 
 ---
 
-## 구조 (3층: main → service → backend)
+## 구조 (2026-06-13 재구성: app/league + app/lab + tools 분리)
 
 ```text
 pocket_quant/
-├─ main.py                    # config.json 읽어 service 호출
+├─ main.py                    # config.json 읽어 run_nsga3 호출 (모드 분기 없음 — NSGA-III만)
 ├─ config.json                # 실행 옵션 (아래 표)
 ├─ OPTIMIZATION.md            # 최적화 정식화 + NSGA-III 설계 + 함정 3개 기록
-├─ egglab/README.md           # 새 시그널 부화 절차·알 후보 (다음 알파)
+├─ app/lab/egglab/README.md           # 새 시그널 부화 절차·알 후보 (다음 알파)
 ├─ character/                 # 캐릭터 이미지 (dr_oh.png, monsieur.png — 커밋됨)
 ├─ app/
-│  ├─ service.py              # 실행 흐름 조립 + 출력 포맷 (단판/진화/nsga3/도감)
-│  ├─ oak.py                  # 오박사 — LM Studio(OpenAI 호환, localhost:1234) 해설
+│  ├─ service.py              # NSGA-III 실행 흐름 조립 + Regime Scanner 입력 갱신
+│  ├─ lab/                    # 실험실 — LLM NPC + 도감 + labnotes
+│  │  ├─ oak.py               #   오박사 LM Studio 해설 (단판 5~7문장 브리핑)
+│  │  ├─ oak_labnotes.py      #   labnotes 작성 어댑터 (긴 연구 일지 모드)
+│  │  └─ dex.py               #   도감 데이터 + print_pokedex()  (`python -m app.lab.dex`)
+│  ├─ league/                 # 리그 — NSGA-III 탐색 + 챔피언로드 ①②③ + 라인업/분석
+│  │  ├─ victory_road.py      #   관문 ①: 졸업생 OOS 연도 시험
+│  │  ├─ battle_frontier.py   #   관문 ②: 블록 부트스트랩 평행세계 운빨 검사
+│  │  ├─ elite_four.py        #   관문 ③: hold-out (소진. 재실행 = 참고용)
+│  │  ├─ champion_road_lineup.py · baselines_comparison.py    # ① 풀라인업·기준선 비교
+│  │  ├─ battle_frontier_lineup.py · battle_frontier_total.py # ② 풀라인업·토탈 분석
+│  │  ├─ elite_four_lineup.py                                  # ③ 풀라인업
+│  │  └─ sweep_seeds.py · top10_champions.py                   # 5 시드 탐색 + Top10 추출
 │  └─ backend/
 │     ├─ core/models.py       # Stats/Strategy/Gym/BattleResult/Report + 적합도
-│     ├─ market/data.py       # yfinance + data_cache/ 캐시 (WARMUP_DAYS=400)
 │     ├─ market/gym.py        # 체육관 6개 (전부 QQQ) — post-COVID 추가 금지 주석 참고
+│     ├─ market/regime.py     # Regime Scanner (50/200 MA + 60일 수익률 + 20일 RV 백분위)
 │     ├─ genes/signals.py     # 시그널 → 포지션(0~1)/기권(NaN), 기권 제외 (가중)평균 결합
-│     ├─ genes/dex.py         # 도감 (SIGNAL_CARDS + GYM_LEADERS + NPC_CARDS)
-│     └─ engine/
-│        ├─ battle.py         # _score_position(공용 채점기) · fight · fight_dca(성실이)
-│        │                    #   · score_vs_dca · 비용 0.1%/편도 (성실이만 무비용)
-│        ├─ strategy.py       # 트레이더 생성 + 이름
-│        ├─ evolve.py         # 손코딩 단일목적 GA (교보재로 유지)
-│        └─ nsga3.py          # Optuna NSGA-III — 6목적, 기본 가중치 전용(A안)
-├─ tests/                     # 심판단 + 챔피언로드 (아래 표)
+│     ├─ engine/
+│     │  ├─ battle.py         # _score_position(공용 채점기) · fight · fight_dca(성실이)
+│     │  │                    #   · score_vs_dca · 비용 0.1%/편도 (성실이만 무비용)
+│     │  ├─ strategy.py       # 트레이더 생성 + 이름
+│     │  └─ nsga3.py          # Optuna NSGA-III — 6목적, 기본 가중치 전용(A안)
+│     └─ data_io/             # 입력/리포팅 파이프라인 (워크플로우 아님)
+│        ├─ data.py           #   yfinance + data_cache/<ticker>/ 캐시 (WARMUP_DAYS=400)
+│        ├─ inspect_front.py · report_nsga3.py · battle_frontier_total.py  # 스터디 → CSV/HTML/MD
+│        └─ (예정) kis_client.py  # KIS API 외인기관/호가/체결 — 새 시그널 원천
+│
+├─ data_cache/                # 캐시 (gitignore) — 티커별 서브폴더: QQQ/, (예정) KIS/...
+├─ tools/                     # validator + 진단 (코드/로직 검증만 — 워크플로우 X)
+│  ├─ test_baselines.py · test_engine_regression.py · test_no_lookahead.py
+│  ├─ test_weighted_combine.py · check_signals.py · check_dca.py
+│  └─ walk_forward.py         # 선발 과정 OOS (자산/기간/비용 민감도)
 ├─ worklog/                   # (gitignore) 실험 노트 — 개인 맥락은 여기만
-└─ reports/                   # (gitignore) HTML/MD 리포트 출력
+├─ labnotes/                  # 오박사 연구 일지 (커밋 가능 — 개인 맥락 금지)
+└─ reports/                   # 리그 영구 기록 — hall_of_fame.md (시즌 누적), regime_picks.json
+                              #   단계별 산출물(.json, sweep/lineup .md)은 시즌 마감 시 폐기 — 코드가
+                              #   재실행하면 다시 생성됨. 영구 기록은 hall_of_fame.md에 절을 추가하고 임시 폴더 삭제.
 ```
 
-의존 방향: `core ← market/genes ← engine` (순환 없음). 데이터 I/O는 data.py 전담, battle은 순수 계산.
+의존 방향: `backend(core ← market/genes ← engine) ← lab/league ← service ← main` (순환 없음).
+**폴더 규칙:** `tools/` = 검증만, 워크플로우(리그 실행) 절대 금지. 리그는 `app/league/`.
+오박사·도감·labnotes는 `app/lab/`. 산출물은 `reports/` (버전 폴더 권장 — 예: `league_v1/`).
 
 ---
 
@@ -93,7 +118,7 @@ pocket_quant/
 - **score_vs_dca** = 0.4×수익차 + 0.4×낙폭개선 + 0.2×샤프차 (성실이 대비, raw만).
   ⚠️ 평균으로 뭉개 단일 적합도로 쓰지 말 것(돼지저금통 부활 실측) — 벡터 그대로.
 
-## 심판단 (tests/) — 전부 루트에서 `python tests/<파일>.py`
+## 심판단 (tools/) — `python tools/<파일>.py`
 
 | 파일 | 역할 | 성격 |
 |---|---|---|
@@ -104,28 +129,44 @@ pocket_quant/
 | check_signals.py | 노출/발동률/상관 — 새 시그널의 '새 정보' 검사 | 진단 |
 | check_dca.py | 성실이 기준선 + score_vs_dca 전수조사 | 진단 |
 | walk_forward.py | 선발 과정 OOS (파라미터로 자산/기간/비용 민감도) | 검증 |
-| victory_road.py | 챔피언로드 관문① — 졸업생 OOS 연도 시험 + 스페셜리스트 트랙 | 검증 |
-| battle_frontier.py | 관문② — 블록 부트스트랩 평행세계 운빨 검사 | 검증 |
-| elite_four.py | 관문③ — hold-out (소진. 재실행은 참고용일 뿐) | 봉인 해제됨 |
-| inspect_front.py / report_nsga3.py | 스터디 분석 / HTML 리포트 생성 | 도구 |
+| e2e.py | 전 파이프라인 스모크 — 게이트/진단/walk_forward/NSGA-III 한 번에 (10초 이내) | 큰 변경 후 |
 
-## config.json (전체 키)
+## 리그 (app/league/) — `python app/league/<파일>.py`
+
+| 파일 | 역할 |
+|---|---|
+| victory_road.py · battle_frontier.py · elite_four.py | 챔피언로드 ① ② ③ 본 어댑터 |
+| champion_road_lineup.py · baselines_comparison.py | ① 풀라인업 입장 · 기준선 4인방 비교 |
+| battle_frontier_lineup.py · battle_frontier_total.py | ② 풀라인업 · 토탈 잔고 분석 |
+| elite_four_lineup.py | ③ 풀라인업 |
+| sweep_seeds.py · top10_champions.py | 5 시드 NSGA-III 탐색 + Top10 추출 |
+
+## 리포팅·데이터 IO (app/backend/data_io/) — `python -m app.backend.data_io.<name>`
+
+| 파일 | 역할 |
+|---|---|
+| inspect_front.py · report_nsga3.py | 저장된 스터디 분석 / HTML 리포트 생성 |
+| battle_frontier_total.py | 관문 ② lineup JSON 재처리 — 토탈 수익 .md 출력 |
+| (예정) kis_client.py | KIS API 입력 — 외인기관/호가 잔량/체결 강도/거래량 급증 |
+
+## config.json (전체 키 — NSGA-III 전용)
 
 ```jsonc
 {
-  "mode": "single",      // single | evolve | nsga3 | dex
-  "genes": null,         // [single] 포켓퀀트 수 (null=랜덤)
-  "pop": 20, "generations": 10,   // [evolve]
-  "seed": null,          // 랜덤 시드
-  "md": null,            // MD 리포트: null=안 씀, ""=기본 경로, "경로"
-  "capital": null,       // 실전 시뮬 시작 자본(원)
-  "trials": 600,         // [nsga3] 트라이얼 수
-  "storage": null,       // [nsga3] 예: "sqlite:///optuna_pocketquant.db" (중단/재개)
-  "study": "nsga3_v2_weights",    // [nsga3] 스터디 이름
-  "tune_params": false,  // [nsga3] true=파라미터도 탐색 (v1 과적합 — 고도화용)
-  "oak": false           // true=리포트 끝 오박사 브리핑 (LM Studio 필요)
+  "trials": 600,                  // 총 목표 trial 수 (재개 시 모자란 만큼만)
+  "seed": null,                   // 랜덤 시드 (null=매번 다름)
+  "storage": null,                // 예: "sqlite:///optuna_pocketquant.db" (중단/재개)
+  "study": "nsga3_v2_weights",    // 스터디 이름
+  "tune_params": false,           // true=파라미터도 탐색 (v1 과적합 — 고도화용)
+  "population_size": 50,          // NSGA-III 한 세대 크기
+  "early_stop_window": null,      // HV MA(N) 정체 시 self stop (예: 5). null=끔
+  "adaptive_mutation": false      // true=HV 신호로 mutation_prob 자동 조정
 }
 ```
+
+**도감 보기**: `python -m app.lab.dex` (모드 분기 없음 — 직접 호출).
+**오박사 단판 브리핑**: 단판 모드가 없어졌으므로 `professor_briefing(report)`은 챔피언로드
+관문 ③(`elite_four.py`)에서만 호출됨. labnotes 작성: `python -m app.lab.oak_labnotes`.
 
 ---
 
@@ -145,7 +186,7 @@ pocket_quant/
 
 ## 다음 작업 (우선순위)
 
-1. **에그랩 부화 1호** — `egglab/README.md`의 알 후보(VIX/TNX/QQQ-SPY/SOX-QQQ/DXY)에서 선택,
+1. **에그랩 부화 1호** — `app/lab/egglab/README.md`의 알 후보(VIX/TNX/QQQ-SPY/SOX-QQQ/DXY)에서 선택,
    부화 절차 6단계(컨닝→새 정보 상관→미시→예선→리그→챔피언로드)
 2. **웜스타트 시드 제너레이터** — 다음 리그 전 필수 (`study.enqueue_trial`, v2에서 필요성 실증)
 3. **Regime Scanner + 70/30 오버레이** — #1918 틸트 후보 대기
