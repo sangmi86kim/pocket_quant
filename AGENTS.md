@@ -27,7 +27,7 @@
     타입 힌트는 시그니처에만 절제, 튜닝 상수는 모듈 상단에 모음. 과한 추상화 금지.
 11. **Optuna storage 누적 금지** — `load_if_exists=False` 고정 (nsga3·tpe 엔진).
     - `study_name`은 매 시즌/실험마다 새로 (예: `nsga3_v1`, `tpe_v1`, `nsga3_v1x_kis_seed42`)
-    - sqlite db는 시즌 임시 작업 영역 — 리그 결과를 `hall_of_fame.md`에 흡수한 뒤 폐기
+    - sqlite db는 시즌 임시 작업 영역 — 리그 결과를 `hall_of_fame_<버전>.md` 신설 + 인덱스 갱신한 뒤 폐기
     - 같은 이름으로 다른 탐색공간(tune_params·시그널 풀·목적 수) 재개 = "도감 오염" — Optuna `DuplicatedStudyError`로 즉시 차단됨
 
 ---
@@ -77,9 +77,9 @@ pocket_quant/
 │     ├─ market/regime.py     # Regime Scanner (50/200 MA + 60일 수익률 + 20일 RV 백분위)
 │     ├─ genes/signals.py     # 시그널 → 포지션(0~1)/기권(NaN), 기권 제외 (가중)평균 결합
 │     ├─ engine/
-│     │  ├─ battle.py         # _score_position(공용 채점기) · fight · fight_dca(성실이)
-│     │  │                    #   · score_vs_dca · 비용 0.1%/편도 (성실이만 무비용)
-│     │  ├─ strategy.py       # 트레이더 생성 + 이름
+│     │  └─ battle.py         # _score_position(공용 채점기) · fight · fight_dca(성실이)
+│     │                       #   · score_vs_dca · 비용 0.1%/편도 (성실이만 무비용)
+│     ├─ search/              # 옵티마이저 3종 (2026-06-13 engine에서 분리)
 │     │  ├─ nsga3.py          # Optuna NSGA-III — 다목적 6개 (가중치 전용 v2)
 │     │  ├─ tpe.py            # Optuna TPE — 단일목적 잔고 합 max (v1 챔피언 출신)
 │     │  └─ cma_es.py         # Optuna CMA-ES — 단일목적, 연속 공간 강함 (v1.x 신설)
@@ -95,9 +95,9 @@ pocket_quant/
 │  └─ walk_forward.py         # 선발 과정 OOS (자산/기간/비용 민감도)
 ├─ worklog/                   # (gitignore) 실험 노트 — 개인 맥락은 여기만
 ├─ labnotes/                  # 오박사 연구 일지 (커밋 가능 — 개인 맥락 금지)
-└─ reports/                   # 리그 영구 기록 — hall_of_fame.md (시즌 누적), regime_picks.json
+└─ reports/                   # 리그 영구 기록 — hall_of_fame.md (시즌 인덱스) + hall_of_fame_<버전>.md 시즌별 파일, regime_picks.json
                               #   단계별 산출물(.json, sweep/lineup .md)은 시즌 마감 시 폐기 — 코드가
-                              #   재실행하면 다시 생성됨. 영구 기록은 hall_of_fame.md에 절을 추가하고 임시 폴더 삭제.
+                              #   재실행하면 다시 생성됨. 영구 기록은 hall_of_fame_<버전>.md 신설 + 인덱스 갱신하고 임시 폴더 삭제.
 ```
 
 의존 방향: `backend(core ← market/genes ← engine) ← lab/league ← service ← main` (순환 없음).
@@ -121,11 +121,12 @@ pocket_quant/
 - **시그널 풀 (2026-06-13 v1.x)**: 13마리. 스타팅 6(가격 기반) + 야생 7(외부 정보원).
   외부 정보원은 yfinance로 받음 (`^VIX`, `^TNX`, `UUP`, `SPY`, `TLT`, `QQQ`, `DIA`).
   외부 데이터 없는 시기는 자동 NaN 기권 (UUP는 2007년~).
-- **옵티마이저 3종** (`app/backend/engine/`):
+- **옵티마이저 3종** (`app/backend/search/`):
   - `nsga3.py` — **다목적**. 6목적 score_vs_dca (5국면 + turnover). Pareto 라인업.
   - `tpe.py` — **단일목적 Bayesian**. 잔고 합 max. v1 챔피언(TPE-s11)이 여기서 나옴.
   - `cma_es.py` — **단일목적 CMA-ES**. 연속 공간 강함. NSGA 계열 친숙 (사용자 본업).
   셋 다 같은 인터페이스 (`run_study(trials, seed, storage, study_name, load_if_exists=False, ...)`).
+  채점(`battle.py`)은 `engine/`에 유지 — 탐색(search)과 평가(engine) 분리.
 - **NSGA-III 목적**: [bear=min(닷컴,GFC), rebound, crash_v, bull, chop] score_vs_dca
   maximize + turnover minimize. `tune_params=False`가 기본 (v1 과적합 전멸 사례).
 - **score_vs_dca** = 0.4×수익차 + 0.4×낙폭개선 + 0.2×샤프차 (성실이 대비, raw만).
