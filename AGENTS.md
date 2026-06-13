@@ -25,6 +25,10 @@
    '포켓몬'은 README 도입부 비유·법적 고지 두 곳에만 존재한다.
 10. **코드 스타일**: 한국어 왜-주석(설계 이유·실측 근거) 중심, `from __future__` 금지,
     타입 힌트는 시그니처에만 절제, 튜닝 상수는 모듈 상단에 모음. 과한 추상화 금지.
+11. **Optuna storage 누적 금지** — `load_if_exists=False` 고정 (nsga3·tpe 엔진).
+    - `study_name`은 매 시즌/실험마다 새로 (예: `nsga3_v1`, `tpe_v1`, `nsga3_v1x_kis_seed42`)
+    - sqlite db는 시즌 임시 작업 영역 — 리그 결과를 `hall_of_fame.md`에 흡수한 뒤 폐기
+    - 같은 이름으로 다른 탐색공간(tune_params·시그널 풀·목적 수) 재개 = "도감 오염" — Optuna `DuplicatedStudyError`로 즉시 차단됨
 
 ---
 
